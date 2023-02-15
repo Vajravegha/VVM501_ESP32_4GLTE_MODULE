@@ -5,10 +5,14 @@
 //refer AT command datasheet
 //FOR VVM501 PRODUCT DETAILS VISIT www.vv-mobility.com
 
-#define RXD2 27     // This is for ESP32 to 4G Module communication MODULE RXD INTERNALLY CONNECTED
-#define TXD2 26 // MODULE TXD INTERNALLY CONNECTED
-#define powerPin 4  // MODULE ESP32 PIN D4 CONNECTED TO POWER KEY PIN OF A7670C CHIPSET
-#define SerialAT Serial1  //Serial communication port between ESP32 and 4G module
+#define TINY_GSM_MODEM_SIM7600  // SIM7600 AT instruction is compatible with A7670
+#define SerialAT Serial1
+#define SerialMon Serial
+#define TINY_GSM_USE_GPRS true
+#include <TinyGsmClient.h>
+#define RXD2 27    //VVM501 MODULE RXD INTERNALLY CONNECTED
+#define TXD2 26    //VVM501 MODULE TXD INTERNALLY CONNECTED
+#define powerPin 4 ////VVM501 MODULE ESP32 PIN D4 CONNECTED TO POWER PIN OF A7670C CHIPSET, INTERNALLY CONNECTED
 int rx = -1;
 String rxString;
 String topicName = "4GLTE/testTopic"; // or enter a topic name of your choice
@@ -16,42 +20,87 @@ String payload = "Hello from 4G Module";  //test message
 char yourMQTTServer[50];
 char yourMQTTPort[20];
 int yourMQTTPortNumber = 0;
+int LED_BUILTIN = 2;  //Default LED Blink for Message Transmit Indication
+
+const char apn[]      = ""; //APN automatically detects for 4G SIM, NO NEED TO ENTER, KEEP IT BLANK
+
+#ifdef DUMP_AT_COMMANDS
+#include <StreamDebugger.h>
+StreamDebugger debugger(SerialAT, SerialMon);
+TinyGsm        modem(debugger);
+#else
+TinyGsm        modem(SerialAT);
+#endif
+TinyGsmClient client(modem);
+
+
 void setup() {
+  Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
   pinMode(powerPin, OUTPUT);
   digitalWrite(powerPin, LOW);
-  Serial.begin(115200);
   delay(100);
-  SerialAT.begin(115200, SERIAL_8N1, RXD2, TXD2);
+  digitalWrite(powerPin, HIGH);
+  delay(1000);
+  digitalWrite(powerPin, LOW);
+
+
+  Serial.println("\nconfiguring VVM501 Module. Kindly wait");
+
   delay(10000);
 
-  Serial.println("Modem Reset, Please Wait");
-  SerialAT.println("AT+CRESET");
-  delay(1000);
-  SerialAT.println("AT+CRESET");  //reset the module
-  delay(20000);
+  SerialAT.begin(115200, SERIAL_8N1, RXD2, TXD2);
 
-  SerialAT.flush();
 
-  SerialAT.println("ATE0");   // turns off the echo mode, only module responses will be received, not user commands
-  delay(1000);
-  SerialAT.println("ATE0");
-  rxString = SerialAT.readString();
-  Serial.print("Got: ");
-  Serial.println(rxString);
-  rx = rxString.indexOf("OK");  //checking for valid response from Modem
-  if (rx != -1)
-    Serial.println("Modem Ready");
-  delay(1000);
+  // Restart takes quite some time
+  // To skip it, call init() instead of restart()
+  DBG("Initializing modem...");
+  if (!modem.init()) {
+    DBG("Failed to restart modem, delaying 10s and retrying");
+    return;
+  }
+  // Restart takes quite some time
+  // To skip it, call init() instead of restart()
+  DBG("Initializing modem...");
+  if (!modem.restart()) {
+    DBG("Failed to restart modem, delaying 10s and retrying");
+    return;
+  }
 
-  Serial.println("SIM card check");
-  SerialAT.println("AT+CPIN?"); //Checking SIM card and network status
-  rxString = SerialAT.readString();
-  Serial.print("Got: ");
-  Serial.println(rxString);
-  rx = rxString.indexOf("+CPIN: READY");
-  if (rx != -1)
-    Serial.println("SIM Card Ready"); //checking for valid SIM ready response from Modem
-  delay(1000);
+  String name = modem.getModemName();
+  DBG("Modem Name:", name);
+
+  String modemInfo = modem.getModemInfo();
+  DBG("Modem Info:", modemInfo);
+
+
+  Serial.println("Waiting for network...");
+  if (!modem.waitForNetwork()) {
+    Serial.println(" fail");
+    delay(10000);
+    return;
+  }
+  Serial.println(" success");
+
+  if (modem.isNetworkConnected()) {
+    Serial.println("Network connected");
+  }
+
+
+  // GPRS connection parameters are usually set after network registration
+  Serial.print(F("Connecting to "));
+  Serial.print(apn);
+  if (!modem.gprsConnect(apn)) {
+    Serial.println(" fail");
+    delay(10000);
+    return;
+  }
+  Serial.println(" success");
+
+  if (modem.isGprsConnected()) {
+    Serial.println("LTE module connected");
+  }
 
   Serial.println("Start MQTT");
   SerialAT.println("AT+CMQTTSTART");  //Start MQTT service
@@ -85,6 +134,7 @@ void setup() {
 }
 
 void loop() {
+  digitalWrite(LED_BUILTIN, LOW);
   char tn[50];  //char buffer for  topic name
   char pl[50];  //char buffer for payload
   topicName.toCharArray(tn, 50);
@@ -135,9 +185,23 @@ void loop() {
   Serial.println(rxString);
   rx = rxString.indexOf("+CMQTTPUB: 0,0");  //Modem response for successful publish
   if (rx != -1)
+  {
     Serial.println("Message Published Succesfully");
+    digitalWrite(LED_BUILTIN, HIGH); //Blink LED Once for Success
+    delay(250);
+    digitalWrite(LED_BUILTIN, LOW);
+  }
   else
+  {
     Serial.println("Message Failed to Publish");
-  delay(5000);  //publish messages every 5 seconds
+    digitalWrite(LED_BUILTIN, HIGH); //Blink LED Twice if not published
+    delay(250);
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(250);
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(250);
+    digitalWrite(LED_BUILTIN, LOW);
+  }
+  delay(3000);  //publish messages every 3 seconds
 
 }
